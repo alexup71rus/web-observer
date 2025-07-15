@@ -1,0 +1,14 @@
+# Project-specific files
+node_modules/
+dist/
+userscripts/*.env
+
+# System files
+.DS_Store
+Thumbs.db
+*.log
+
+# Environment and build artifacts
+.env
+npm-debug.log
+package-lock.json
