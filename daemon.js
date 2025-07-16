@@ -22,6 +22,11 @@ async function ensureUserscriptsDir() {
 function parseDuration(duration) {
   try {
     if (!duration) return null;
+
+    if (duration.split(' ').length === 5 && cron.validate(duration)) {
+      return { type: 'cron', schedule: duration };
+    }
+
     if (duration.includes('.')) {
       if (duration.includes(' ')) {
         const [date, time] = duration.split(' ');
