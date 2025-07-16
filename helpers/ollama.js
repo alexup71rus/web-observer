@@ -8,8 +8,6 @@ async function processWithOllama(model, prompt, content, ollama_host = 'http://l
     if (typeof content !== 'string') throw new Error('Content must be a string');
     if (!prompt.includes('{content}')) throw new Error('Prompt must include {content}');
     if (!/https?:\/\/.+/.test(ollama_host)) throw new Error('Invalid ollama_host URL');
-
-    await logDaemon(`Starting Ollama processing with model ${model}`);
     const client = new ollama.Ollama({ host: ollama_host });
 
     try {
@@ -23,7 +21,7 @@ async function processWithOllama(model, prompt, content, ollama_host = 'http://l
       prompt: prompt.replace('{content}', content),
       stream: false
     });
-    await logDaemon(`Ollama processing with model ${model} completed`);
+
     return response.response;
   } catch (err) {
     console.error('Ollama error:', err.message);

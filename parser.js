@@ -11,6 +11,7 @@ const dotenv = require('dotenv');
 const os = require('os');
 const { CONFIG_TEMPLATE } = require('./template');
 const { loadConfig, runTask } = require('./daemon');
+const { logError, logResult, logDaemon } = require('./helpers/log');
 
 const APP_DIR = path.join(os.homedir(), '.web-observer');
 const USERSCRIPTS_DIR = path.join(APP_DIR, 'userscripts');
@@ -22,6 +23,8 @@ const DAEMON_BIN_NAME = isWindows ? 'wo-daemon.exe' : 'wo-daemon';
 const BIN_SRC = path.join(path.dirname(process.execPath), isWindows ? 'wo.exe' : 'wo');
 const DAEMON_BIN_SRC = path.join(path.dirname(process.execPath), isWindows ? 'wo-daemon.exe' : 'wo-daemon');
 const LOG_FILE = path.join(APP_DIR, 'wo.log');
+const RESULT_LOG_FILE = path.join(APP_DIR, 'wo-result.log');
+const DAEMON_LOG_FILE = path.join(APP_DIR, 'wo-daemon.log');
 const PID_FILE = path.join(APP_DIR, 'daemon.pid');
 const isSystemDir = process.execPath.includes(BIN_DIR);
 
@@ -33,14 +36,6 @@ async function ensureAppDir() {
     await logError(msg);
     console.error(msg);
     process.exit(1);
-  }
-}
-
-async function logError(message) {
-  try {
-    await fsp.appendFile(LOG_FILE, `${new Date().toISOString()} - ${message}\n`);
-  } catch (err) {
-    console.error('Error writing to log file:', err.message);
   }
 }
 
@@ -90,27 +85,55 @@ async function isDaemonRunning() {
 
 async function checkInstallation() {
   const nodeModulesExists = await fsp.access(path.join(__dirname, 'node_modules')).then(() => true).catch(() => false);
-  const binExists = await fsp.access(path.join(BIN_DIR, BIN_NAME)).then(() => true).catch(() => false);
-  const daemonBinExists = await fsp.access(path.join(BIN_DIR, DAEMON_BIN_NAME)).then(() => true).catch(() => false);
   const distBinExists = await fsp.access(BIN_SRC).then(() => true).catch(() => false);
   const distDaemonBinExists = await fsp.access(DAEMON_BIN_SRC).then(() => true).catch(() => false);
 
   if (!nodeModulesExists) await runCommand('npm install', 'Failed to install dependencies');
   if (!distBinExists || !distDaemonBinExists) await runCommand('npm run build', 'Failed to build binaries');
 
-  if (!binExists) {
-    await fsp.mkdir(BIN_DIR, { recursive: true });
-    await fsp.copyFile(BIN_SRC, path.join(BIN_DIR, BIN_NAME));
-    if (!isWindows) await fsp.chmod(path.join(BIN_DIR, BIN_NAME), '755');
-    console.log(`Alias '${BIN_NAME}' set up at ${BIN_DIR}`);
+  if (!distBinExists) {
+    const msg = `Binary file ${BIN_SRC} not found`;
+    await logError(msg);
+    console.error(msg);
+    process.exit(1);
+  }
+  if (!distDaemonBinExists) {
+    const msg = `Daemon binary file ${DAEMON_BIN_SRC} not found`;
+    await logError(msg);
+    console.error(msg);
+    process.exit(1);
   }
 
-  if (!daemonBinExists) {
-    await fsp.mkdir(BIN_DIR, { recursive: true });
-    await fsp.copyFile(DAEMON_BIN_SRC, path.join(BIN_DIR, DAEMON_BIN_NAME));
-    if (!isWindows) await fsp.chmod(path.join(BIN_DIR, DAEMON_BIN_NAME), '755');
-    console.log(`Alias '${DAEMON_BIN_NAME}' set up at ${BIN_DIR}`);
+  await fsp.unlink(LOG_FILE).catch(() => {});
+  await fsp.unlink(RESULT_LOG_FILE).catch(() => {});
+  await fsp.unlink(DAEMON_LOG_FILE).catch(() => {});
+
+  await fsp.mkdir(BIN_DIR, { recursive: true });
+  await fsp.copyFile(BIN_SRC, path.join(BIN_DIR, BIN_NAME));
+  if (!isWindows) {
+    try {
+      await fsp.chmod(path.join(BIN_DIR, BIN_NAME), '755');
+    } catch (err) {
+      const msg = `Failed to set permissions for ${BIN_NAME}: ${err.message}`;
+      await logError(msg);
+      console.error(msg);
+      process.exit(1);
+    }
   }
+  console.log(`Alias '${BIN_NAME}' set up at ${BIN_DIR}`);
+
+  await fsp.copyFile(DAEMON_BIN_SRC, path.join(BIN_DIR, DAEMON_BIN_NAME));
+  if (!isWindows) {
+    try {
+      await fsp.chmod(path.join(BIN_DIR, DAEMON_BIN_NAME), '755');
+    } catch (err) {
+      const msg = `Failed to set permissions for ${DAEMON_BIN_NAME}: ${err.message}`;
+      await logError(msg);
+      console.error(msg);
+      process.exit(1);
+    }
+  }
+  console.log(`Alias '${DAEMON_BIN_NAME}' set up at ${BIN_DIR}`);
 
   console.log('Installation completed');
   process.exit(0);
@@ -169,22 +192,22 @@ async function startDaemonWrapper() {
       detached: true,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-    daemon.stdout.pipe(fs.createWriteStream(path.join(APP_DIR, 'wo.log'), { flags: 'a' }));
-    daemon.stderr.pipe(fs.createWriteStream(path.join(APP_DIR, 'wo.log'), { flags: 'a' }));
+    daemon.stdout.pipe(fs.createWriteStream(DAEMON_LOG_FILE, { flags: 'a' }));
+    daemon.stderr.pipe(fs.createWriteStream(DAEMON_LOG_FILE, { flags: 'a' }));
     await fsp.writeFile(PID_FILE, daemon.pid.toString());
+    await logDaemon(`Daemon started with PID ${daemon.pid}`);
     console.log(`Daemon started with PID ${daemon.pid}`);
 
-    // Проверка через 1 секунду
     await new Promise(resolve => setTimeout(resolve, 1000));
     if (!(await isDaemonRunning())) {
-      const logs = await fsp.readFile(LOG_FILE, 'utf8').catch(() => '');
+      const logs = await fsp.readFile(DAEMON_LOG_FILE, 'utf8').catch(() => '');
       console.error('Daemon failed to stay running. Check logs:');
       console.error(logs || 'No logs available');
       process.exit(1);
     }
 
     daemon.unref();
-    process.exit(0); // Явно завершаем CLI после проверки
+    process.exit(0);
   } catch (err) {
     await logError(`Failed to start daemon: ${err.message}`);
     console.error(`Failed to start daemon: ${err.message}`);
@@ -197,7 +220,16 @@ async function stopDaemonWrapper() {
     if (await isDaemonRunning()) {
       const pid = await fsp.readFile(PID_FILE, 'utf8');
       process.kill(parseInt(pid), 'SIGTERM');
-      await fsp.unlink(PID_FILE);
+
+      for (let i = 0; i < 50; i++) {
+        if (!(await isDaemonRunning())) break;
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      if (await isDaemonRunning()) {
+        console.error('Daemon failed to stop, forcing termination');
+        process.kill(parseInt(pid), 'SIGKILL');
+      }
+      await fsp.unlink(PID_FILE).catch(() => {});
       console.log('Daemon stopped');
     } else {
       console.log('Daemon not running');

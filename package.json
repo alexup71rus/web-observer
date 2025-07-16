@@ -8,13 +8,14 @@
   },
   "main": "parser.js",
   "scripts": {
-    "build:cli:mac": "pkg . --targets node18-macos-arm64 --output dist/macos-arm64/wo --no-warnings",
-    "build:cli:win": "pkg . --targets node18-win-x64 --output dist/win-x64/wo.exe --no-warnings",
-    "build:daemon:mac": "pkg daemon.js --targets node18-macos-arm64 --output dist/macos-arm64/wo-daemon --no-warnings",
-    "build:daemon:win": "pkg daemon.js --targets node18-win-x64 --output dist/win-x64/wo-daemon.exe --no-warnings",
+    "build:cli:mac": "pkg . --targets node18-macos-arm64 --public --output dist/macos-arm64/wo --no-warnings",
+    "build:cli:win": "pkg . --targets node18-win-x64 --public --output dist/win-x64/wo.exe --no-warnings",
+    "build:daemon:mac": "pkg daemon.js --public --targets node18-macos-arm64 --output dist/macos-arm64/wo-daemon --no-warnings",
+    "build:daemon:win": "pkg daemon.js --public --targets node18-win-x64 --output dist/win-x64/wo-daemon.exe --no-warnings",
     "build:cli": "npm run build:cli:mac && npm run build:cli:win",
     "build:daemon": "npm run build:daemon:mac && npm run build:daemon:win",
     "build": "npm run build:cli && npm run build:daemon",
+    "sys-install": "./wo install",
     "stop": "node parser.js kill"
   },
   "keywords": [
@@ -27,7 +28,6 @@
   "license": "ISC",
   "dependencies": {
     "commander": "^12.1.0",
-    "cron-parser": "^5.3.0",
     "dotenv": "^16.4.5",
     "node-cron": "^3.0.3",
     "ollama": "^0.5.9",
@@ -50,8 +50,7 @@
       "wo-daemon": "daemon.js"
     },
     "ignore": [
-      "**/*.d.ts",
-      "node_modules/pm2-deploy/**/*"
+      "node_modules/**/*.d.ts"
     ]
   }
 }
