@@ -5,6 +5,7 @@ const os = require('os');
 const APP_DIR = path.join(os.homedir(), '.web-observer');
 const LOG_FILE = path.join(APP_DIR, 'wo.log');
 const RESULT_LOG_FILE = path.join(APP_DIR, 'wo-result.log');
+const DAEMON_LOG_FILE = path.join(APP_DIR, 'wo-daemon.log');
 
 async function ensureAppDir() {
   try {
@@ -33,4 +34,13 @@ async function logResult(message) {
   }
 }
 
-module.exports = { logError, logResult };
+async function logDaemon(message) {
+  try {
+    await ensureAppDir();
+    await fs.appendFile(DAEMON_LOG_FILE, `${new Date().toISOString()} - ${message}\n`);
+  } catch (err) {
+    console.error(`Error writing to daemon log file ${DAEMON_LOG_FILE}: ${err.message}`);
+  }
+}
+
+module.exports = { logError, logResult, logDaemon };

@@ -5,8 +5,8 @@ It supports scheduled tasks, configuration management, and cross-platform binari
 
 ## Features
 - Scrapes websites with JavaScript execution using Puppeteer.
-- Processes content with local Ollama models (e.g., `llama3`).
-- Schedules tasks using `dd.mm.yy hh.mm` or `hh.mm` formats.
+- Processes content with local Ollama models (e.g., `llama3`). 
+- Schedules tasks with cron expressions (e.g., `* * * * *`), `hh.mm` (daily), or `dd.mm.yy hh.mm` (one-time).
 - Manages configs in `userscripts/*.env` with sanitized filenames.
 - Builds standalone binaries with `pkg`.
 

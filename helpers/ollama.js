@@ -1,4 +1,5 @@
 const ollama = require('ollama');
+const { logResult, logDaemon } = require('./log');
 
 async function processWithOllama(model, prompt, content, ollama_host = 'http://localhost:11434') {
   try {
@@ -8,12 +9,13 @@ async function processWithOllama(model, prompt, content, ollama_host = 'http://l
     if (!prompt.includes('{content}')) throw new Error('Prompt must include {content}');
     if (!/https?:\/\/.+/.test(ollama_host)) throw new Error('Invalid ollama_host URL');
 
+    await logDaemon(`Starting Ollama processing with model ${model}`);
     const client = new ollama.Ollama({ host: ollama_host });
 
     try {
       await client.list();
     } catch (err) {
-      throw new Error('Ollama server is not reachable');
+      throw new Error(`Ollama server is not reachable: ${err.message}`);
     }
 
     const response = await client.generate({
@@ -21,9 +23,11 @@ async function processWithOllama(model, prompt, content, ollama_host = 'http://l
       prompt: prompt.replace('{content}', content),
       stream: false
     });
+    await logDaemon(`Ollama processing with model ${model} completed`);
     return response.response;
   } catch (err) {
     console.error('Ollama error:', err.message);
+    await logDaemon(`Ollama error: ${err.message}`);
     return 'Error processing with Ollama';
   }
 }

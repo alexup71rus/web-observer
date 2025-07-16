@@ -2,11 +2,27 @@ const fs = require('fs').promises;
 const path = require('path');
 const cron = require('node-cron');
 const dotenv = require('dotenv');
+const os = require('os');
 const { parseSite } = require('./helpers/parse');
 const { processWithOllama } = require('./helpers/ollama');
-const { logResult } = require('./helpers/log');
+const { logResult, logDaemon } = require('./helpers/log');
+const { CronExpressionParser } = require('cron-parser');
 
-const USERSCRIPTS_DIR = path.join(process.cwd(), 'userscripts');
+process.on('unhandledRejection', async (reason, promise) => {
+  const message = `Unhandled Rejection at: ${promise}, reason: ${reason.stack || reason}`;
+  console.error(message);
+  await logDaemon(message);
+  await logResult(message);
+});
+
+process.on('uncaughtException', async (err, origin) => {
+  const message = `Uncaught Exception: ${err.message}, origin: ${origin}`;
+  console.error(message);
+  await logDaemon(message);
+  await logResult(message);
+});
+
+const USERSCRIPTS_DIR = path.join(os.homedir(), '.web-observer', 'userscripts');
 const scheduledTasks = [];
 let keepAliveTimer;
 
@@ -14,29 +30,30 @@ async function ensureUserscriptsDir() {
   try {
     await fs.mkdir(USERSCRIPTS_DIR, { recursive: true });
   } catch (err) {
-    console.error('Error creating userscripts directory:', err);
+    console.error('Error creating userscripts directory:', err.message);
+    await logDaemon(`Error creating userscripts directory: ${err.message}`);
     process.exit(1);
   }
 }
 
-function parseDuration(duration) {
+async function parseDuration(duration) {
   try {
     if (!duration) return null;
-
-    if (duration.split(' ').length === 5 && cron.validate(duration)) {
-      return { type: 'cron', schedule: duration };
+    const trimmedDuration = duration.trim();
+    if (trimmedDuration.split(' ').length === 5 && cron.validate(trimmedDuration)) {
+      await logDaemon(`Valid cron schedule: ${trimmedDuration}`);
+      return { type: 'cron', schedule: trimmedDuration };
     }
-
-    if (duration.includes('.')) {
-      if (duration.includes(' ')) {
-        const [date, time] = duration.split(' ');
+    if (trimmedDuration.includes('.')) {
+      if (trimmedDuration.includes(' ')) {
+        const [date, time] = trimmedDuration.split(' ');
         const [day, month, year] = date.split('.').map(Number);
         const [hour, minute] = time.split('.').map(Number);
         const target = new Date(2000 + year, month - 1, day, hour, minute);
         if (isNaN(target)) throw new Error('Invalid date format');
         return { type: 'once', delay: target - new Date() };
       } else {
-        const [hour, minute] = duration.split('.').map(Number);
+        const [hour, minute] = trimmedDuration.split('.').map(Number);
         if (isNaN(hour) || isNaN(minute)) throw new Error('Invalid time format');
         return { type: 'cron', schedule: `${minute} ${hour} * * *` };
       }
@@ -44,21 +61,28 @@ function parseDuration(duration) {
     throw new Error('Invalid duration format');
   } catch (err) {
     console.error(`Error parsing duration "${duration}":`, err.message);
+    await logDaemon(`Error parsing duration "${duration}": ${err.message}`);
     return null;
   }
 }
 
 async function loadConfig(filePath) {
-  const config = dotenv.parse(await fs.readFile(filePath));
-  const required = ['url', 'model', 'prompt', 'tags'];
-  for (const field of required) {
-    if (!config[field]) throw new Error(`Missing required field: ${field}`);
+  try {
+    const config = dotenv.parse(await fs.readFile(filePath));
+    const required = ['url', 'model', 'prompt', 'tags'];
+    for (const field of required) {
+      if (!config[field]) throw new Error(`Missing required field: ${field}`);
+    }
+    if (!config.prompt.includes('{content}')) throw new Error('Prompt must include {content}');
+    if (!/https?:\/\/.+/.test(config.url)) throw new Error('Invalid URL format');
+    if (config.tags.trim() === '') throw new Error('Tags cannot be empty');
+    if (config.ollama_host && !/https?:\/\/.+/.test(config.ollama_host)) throw new Error('Invalid ollama_host URL');
+    return config;
+  } catch (err) {
+    console.error(`Error loading config ${filePath}:`, err.message);
+    await logDaemon(`Error loading config ${filePath}: ${err.message}`);
+    throw err;
   }
-  if (!config.prompt.includes('{content}')) throw new Error('Prompt must include {content}');
-  if (!/https?:\/\/.+/.test(config.url)) throw new Error('Invalid URL format');
-  if (config.tags.trim() === '') throw new Error('Tags cannot be empty');
-  if (config.ollama_host && !/https?:\/\/.+/.test(config.ollama_host)) throw new Error('Invalid ollama_host format');
-  return config;
 }
 
 async function loadConfigs() {
@@ -72,65 +96,149 @@ async function loadConfigs() {
         tasks.push({ file, config });
       } catch (err) {
         console.error(`Error loading config ${file}:`, err.message);
+        await logDaemon(`Error loading config ${file}: ${err.message}`);
       }
     }
   }
+  await logDaemon(`Loaded ${tasks.length} valid tasks`);
   return tasks;
 }
 
 async function runTask(task, logToConsole = false) {
+  const taskName = task.config.name || task.file;
   try {
+    await logDaemon(`Starting task ${taskName}`);
     const { url, tags, model, prompt, ollama_host } = task.config;
     const content = await parseSite(url, tags.split(',').map(t => t.trim()));
+    if (content === 'Error parsing site') {
+      const message = `Error running task ${taskName}: Failed to parse site`;
+      console.error(message);
+      await logResult(message);
+      await logDaemon(message);
+      return;
+    }
     const result = await processWithOllama(model, prompt, content, ollama_host || 'http://localhost:11434');
-    const message = `Result for ${task.config.name || task.file}:\n${result}`;
+    if (result === 'Error processing with Ollama') {
+      const message = `Error running task ${taskName}: Failed to process with Ollama`;
+      console.error(message);
+      await logResult(message);
+      await logDaemon(message);
+      return;
+    }
+    const message = `Result for ${taskName}:\n${result}`;
     await logResult(message);
     if (logToConsole) console.log(message);
+    await logDaemon(`Task ${taskName} completed successfully`);
   } catch (err) {
-    const message = `Error running task ${task.config.name || task.file}: ${err.message}`;
+    const message = `Error running task ${taskName}: ${err.message}`;
     console.error(message);
     await logResult(message);
-    if (logToConsole) console.log(message);
+    await logDaemon(message);
+  }
+}
+
+function getNextCronExecution(schedule) {
+  try {
+    const interval = CronExpressionParser.parse(schedule, { tz: 'Europe/Moscow' });
+    const next = interval.next().toDate();
+    const timeToNext = next.getTime() - Date.now();
+    return timeToNext;
+  } catch (err) {
+    console.error(`Error parsing cron schedule ${schedule}:`, err.message);
+    await logDaemon(`Error parsing cron schedule ${schedule}: ${err.message}`);
+    return Infinity;
   }
 }
 
 async function startDaemon() {
-  console.log('Daemon started, tasks scheduled');
-  const tasks = await loadConfigs();
-  tasks.forEach(task => {
-    const duration = parseDuration(task.config.duration);
-    if (!duration) {
-      console.log(`Task ${task.config.name || task.file} not scheduled: no duration specified`);
-      return;
-    }
-    if (duration.type === 'once') {
-      if (duration.delay > 0) {
-        const timeout = setTimeout(() => runTask(task), duration.delay);
-        scheduledTasks.push({ task, timeout });
-      } else {
-        console.log(`Task ${task.config.name || task.file} skipped: past date`);
+  try {
+    await logDaemon('Daemon initialization started');
+    const tasks = await loadConfigs();
+    await logDaemon(`Starting daemon with ${tasks.length} tasks`);
+    for (const task of tasks) {
+      const duration = await parseDuration(task.config.duration);
+      if (!duration) {
+        console.error(`No duration specified for task ${task.config.name || task.file}`);
+        await logDaemon(`No duration specified for task ${task.config.name || task.file}`);
+        continue;
       }
-    } else if (duration.type === 'cron') {
-      if (cron.validate(duration.schedule)) {
-        const cronTask = cron.schedule(duration.schedule, () => runTask(task));
-        scheduledTasks.push({ task, cronTask });
-      } else {
-        console.log(`Task ${task.config.name || task.file} not scheduled: invalid cron schedule`);
+      if (duration.type === 'once') {
+        if (duration.delay > 0) {
+          const timeout = setTimeout(async () => {
+            try {
+              await runTask(task);
+              await logDaemon(`One-time task ${task.config.name || task.file} completed`);
+            } catch (err) {
+              console.error(`Error in one-time task ${task.config.name || task.file}: ${err.message}`);
+              await logDaemon(`Error in one-time task ${task.config.name || task.file}: ${err.message}`);
+            }
+          }, duration.delay);
+          scheduledTasks.push({ task, timeout });
+          await logDaemon(`Scheduled one-time task ${task.config.name || task.file} in ${duration.delay}ms`);
+        }
+      } else if (duration.type === 'cron') {
+        if (cron.validate(duration.schedule)) {
+          const cronTask = cron.schedule(duration.schedule, async () => {
+            try {
+              await runTask(task);
+              await logDaemon(`Cron task ${task.config.name || task.file} completed`);
+            } catch (err) {
+              console.error(`Error in cron task ${task.config.name || task.file}: ${err.message}`);
+              await logDaemon(`Error in cron task ${task.config.name || task.file}: ${err.message}`);
+            }
+          }, {
+            scheduled: true,
+            timezone: 'Europe/Moscow'
+          });
+          scheduledTasks.push({ task, cronTask });
+          await logDaemon(`Scheduled cron task ${task.config.name || task.file} with schedule ${duration.schedule}`);
+        } else {
+          console.error(`Invalid cron schedule for task ${task.config.name || task.file}: ${duration.schedule}`);
+          await logDaemon(`Invalid cron schedule for task ${task.config.name || task.file}: ${duration.schedule}`);
+        }
       }
     }
-  });
-
-  if (scheduledTasks.length === 0) {
-    keepAliveTimer = setInterval(() => {}, 1000 * 60 * 60);
+    await logDaemon(`All tasks processed, ${scheduledTasks.length} scheduled`);
+    process.stdin.resume();
+    keepAliveTimer = setInterval(async () => {
+      try {
+        let minTime = Infinity;
+        let nextTask = null;
+        for (const { task, cronTask } of scheduledTasks) {
+          if (cronTask) {
+            const timeToNext = getNextCronExecution(task.config.duration);
+            if (timeToNext < minTime) {
+              minTime = timeToNext;
+              nextTask = task.config.name || task.file;
+            }
+          }
+        }
+      } catch (err) {
+        console.error(`Error in keepAliveTimer: ${err.message}`);
+        await logDaemon(`Error in keepAliveTimer: ${err.message}`);
+      }
+    }, 5000);
+    await logDaemon('Daemon initialization completed');
+  } catch (err) {
+    console.error(`Daemon crashed: ${err.message}`);
+    await logResult(`Daemon crashed: ${err.message}`);
+    await logDaemon(`Daemon crashed: ${err.message}`);
+    process.exit(1);
   }
 }
 
 async function stopDaemon() {
-  scheduledTasks.forEach(t => t.timeout ? clearTimeout(t.timeout) : t.cronTask.destroy());
-  scheduledTasks.length = 0;
-  if (keepAliveTimer) {
-    clearInterval(keepAliveTimer);
-    keepAliveTimer = null;
+  try {
+    scheduledTasks.forEach(t => t.timeout ? clearTimeout(t.timeout) : t.cronTask.destroy());
+    scheduledTasks.length = 0;
+    if (keepAliveTimer) {
+      clearInterval(keepAliveTimer);
+      keepAliveTimer = null;
+    }
+    await logDaemon('Daemon stopped');
+  } catch (err) {
+    console.error(`Error stopping daemon: ${err.message}`);
+    await logDaemon(`Error stopping daemon: ${err.message}`);
   }
 }
 

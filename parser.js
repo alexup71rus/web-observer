@@ -119,7 +119,8 @@ async function checkInstallation() {
 async function uninstall() {
   try {
     if (await isDaemonRunning()) await stopDaemonWrapper();
-    await fsp.rm(BIN_DIR, { recursive: true, force: true });
+    await fsp.unlink(path.join(BIN_DIR, BIN_NAME)).catch(() => {});
+    await fsp.unlink(path.join(BIN_DIR, DAEMON_BIN_NAME)).catch(() => {});
     await fsp.rm(APP_DIR, { recursive: true, force: true });
     console.log('Uninstalled successfully');
     process.exit(0);
@@ -172,8 +173,18 @@ async function startDaemonWrapper() {
     daemon.stderr.pipe(fs.createWriteStream(path.join(APP_DIR, 'wo.log'), { flags: 'a' }));
     await fsp.writeFile(PID_FILE, daemon.pid.toString());
     console.log(`Daemon started with PID ${daemon.pid}`);
+
+    // Проверка через 1 секунду
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    if (!(await isDaemonRunning())) {
+      const logs = await fsp.readFile(LOG_FILE, 'utf8').catch(() => '');
+      console.error('Daemon failed to stay running. Check logs:');
+      console.error(logs || 'No logs available');
+      process.exit(1);
+    }
+
     daemon.unref();
-    process.exit(0);
+    process.exit(0); // Явно завершаем CLI после проверки
   } catch (err) {
     await logError(`Failed to start daemon: ${err.message}`);
     console.error(`Failed to start daemon: ${err.message}`);
