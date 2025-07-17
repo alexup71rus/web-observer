@@ -20,4 +20,3 @@ Configs store `name`, `ollama_host`, `model`, `prompt`, `duration`, `tags`, `url
 
 ## Notes
 Ensure Ollama runs at `ollama_host` (default: `http://localhost:11434`).  
-Licensed under ISC.
